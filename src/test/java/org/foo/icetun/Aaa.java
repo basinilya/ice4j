@@ -4,6 +4,13 @@ import java.io.IOException;
 import java.net.BindException;
 import java.net.InetAddress;
 import java.net.SocketAddress;
+import java.util.Queue;
+import java.util.concurrent.Callable;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RunnableFuture;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.TimeUnit;
 
 import org.ice4j.Transport;
 import org.ice4j.TransportAddress;
@@ -16,13 +23,37 @@ import test.SdpUtils;
 
 public class Aaa {
 
+	
     public static void main(final String[] args) throws Exception {
-    	// https://stackoverflow.com/questions/36829060/how-to-receive-public-ip-and-port-using-stun-and-ice4j
-    	new Messenger() {
+    	/*
+    	FutureTask<String> fut = new FutureTask<String>(new Callable<String>() {
     		@Override
-    		public void onMessage(String msg, SocketAddress from) {
+    		public String call() throws Exception {
+    			return null;
+    		}
+		});
+    	*/
+    	final LinkedBlockingQueue<String> queue = new LinkedBlockingQueue<>();
+    	// https://stackoverflow.com/questions/36829060/how-to-receive-public-ip-and-port-using-stun-and-ice4j
+    	Messenger messenger = new Messenger() {
+    		@Override
+    		public void onMessage(String msg) {
+    			queue.add(msg);
     		}
     	};
+
+    	new Thread() {
+    		public void run() {
+    	    	try {
+    	    		for(;;) {
+    	    			messenger.sendMessage("hello");
+    	    			queue.poll(10, TimeUnit.SECONDS);
+    	    		}
+				} catch (Exception e) {
+					e.printStackTrace();
+				}
+    		};
+    	}.start();
 
         final Agent agent = new Agent(); // A simple ICE Agent
         /*** Setup the STUN servers: ***/

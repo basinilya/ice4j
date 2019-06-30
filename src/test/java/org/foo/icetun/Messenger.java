@@ -1,18 +1,26 @@
 package org.foo.icetun;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.Closeable;
+import java.io.DataInput;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.SocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.SocketException;
 import java.net.UnknownHostException;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.logging.*;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class Messenger implements Closeable {
 
@@ -21,7 +29,7 @@ public class Messenger implements Closeable {
 	}
 
 	private static final int PORT = 6270;
-	private static final int MAX_JUMBO = 10000;
+	//private static final int MAX_JUMBO = 10000;
 
 	private static final InetSocketAddress[] PEERS = { //
 			mkPeer("192.168.21.116", PORT), //
@@ -37,7 +45,7 @@ public class Messenger implements Closeable {
 	public static void main(String[] args) throws Exception {
 		try (Messenger inst = new Messenger() {
 			@Override
-			public void onMessage(String msg, SocketAddress from) {
+			public void onMessage(String msg) {
 				System.out.println(msg);
 			}
 		}) {
@@ -51,6 +59,10 @@ public class Messenger implements Closeable {
 
 	@Override
 	public void close() throws IOException {
+		if (ss != null) {
+			ss.close();
+			ss = null;
+		}
 		if (sock != null) {
 			sock.close();
 			sock = null;
@@ -64,7 +76,7 @@ public class Messenger implements Closeable {
 		}
 	}
 
-	public void onMessage(String msg, SocketAddress from) {
+	public void onMessage(String msg) {
 		//
 	}
 
@@ -81,22 +93,29 @@ public class Messenger implements Closeable {
 	}
 
 	public void sendMessage(String msg) throws IOException {
-		byte[] sendBuf = msg.getBytes("UTF-8");
-		for (InetSocketAddress otherPeer : otherPeers) {
-			DatagramPacket udpSend = new DatagramPacket(sendBuf, sendBuf.length, otherPeer);
-			sock.send(udpSend);
-		}
+		out.writeUTF(msg);
+		out.flush();
 	}
 
 	private final ArrayList<InetSocketAddress> otherPeers = new ArrayList<>();
 
-	private DatagramSocket sock;
+	private ServerSocket ss;
 
+	private Socket sock;
+
+	private DataOutputStream out;
+
+	private DataInput in;
+	
 	private void start0() throws Exception {
+
+		ExecutorService executorService = Executors.newCachedThreadPool();
+		ExecutorCompletionService<Socket> ecs = new ExecutorCompletionService<>(executorService);
 
 		for (InetSocketAddress unresolved : PEERS) {
 			final InetSocketAddress resolved;
 			try {
+				// TODO: resolve may take long
 				resolved = unresolved.isUnresolved()
 						? new InetSocketAddress(InetAddress.getByName(unresolved.getHostName()), unresolved.getPort())
 						: unresolved;
@@ -104,37 +123,96 @@ public class Messenger implements Closeable {
 				LOGGER.log(Level.FINE, "{0}", new Object[] { e.toString() });
 				continue;
 			}
-			if (sock == null) {
+			if (ss == null) {
 				boolean ok = false;
 				try {
-					sock = new DatagramSocket(resolved);
-					LOGGER.log(Level.INFO, "bound to: {0}", sock.getLocalSocketAddress());
+					ss = new ServerSocket(resolved.getPort(), 10, resolved.getAddress());
+					LOGGER.log(Level.INFO, "bound to: {0}", ss.getLocalSocketAddress());
 					ok = true;
 					continue;
 				} catch (SocketException e) {
 					LOGGER.log(Level.FINE, "{0} {1}", new Object[] { resolved, e.toString() });
 				} finally {
-					if (!ok && sock != null) {
+					if (!ok && ss != null) {
 						close();
 					}
 				}
 			}
 			otherPeers.add(resolved);
 		}
-		if (sock == null) {
+		if (ss == null) {
 			throw new Exception("bind failed");
 		}
-		if (otherPeers.isEmpty()) {
-			throw new Exception("no other peers");
-		}
 		LOGGER.log(Level.INFO, "other peers: {0}", otherPeers);
-		recvThread.setName("recvThread " + sock.getLocalSocketAddress());
+
+		final ServerSocket saveSs = ss;
+		ecs.submit(new Callable<Socket>() {
+			@Override
+			public Socket call() throws Exception {
+				Socket tmp = saveSs.accept();
+				return tmp;
+			}
+		});
+		int nTasks = 1;
+		
+		for (InetSocketAddress otherPeer : otherPeers) {
+			ecs.submit(new Callable<Socket>() {
+				@Override
+				public Socket call() throws Exception {
+					Socket tmp = new Socket(otherPeer.getAddress(), otherPeer.getPort());
+					return tmp;
+				}
+			});
+			nTasks++;
+		}
+		for(;nTasks > 0; nTasks--) {
+			try {
+				sock = ecs.take().get();
+				LOGGER.log(Level.INFO, "connected to: {0}", sock.getRemoteSocketAddress());
+				break;
+			} catch (ExecutionException e) {
+				Throwable cause = e.getCause();
+				LOGGER.log(Level.INFO, "connect failed: {0}", cause.toString());
+			}
+		}
+		if (nTasks > 0) {
+			final int nTasks2 = nTasks;
+			executorService.submit(new Callable<Void>() {
+				@Override
+				public Void call() throws Exception {
+					int nTasks = nTasks2;
+					for(;nTasks > 0; nTasks--) {
+						try {
+							Socket tmp = ecs.take().get();
+							LOGGER.log(Level.INFO, "also connected to: {0}", sock.getRemoteSocketAddress());
+							try {
+								tmp.close();
+							} catch (Exception e) {
+								//
+							}
+						} catch (ExecutionException e) {
+							Throwable cause = e.getCause();
+							LOGGER.log(Level.INFO, "connect failed: {0}", cause.toString());
+						}
+					}
+					return null;
+				}
+			});
+		}
+		if (sock == null) {
+			throw new Exception("failed to connect");
+		}
+		ss.close();
+		ss = null;
+		in = new DataInputStream(new BufferedInputStream(sock.getInputStream()));
+		out = new DataOutputStream(new BufferedOutputStream(sock.getOutputStream()));
+		recvThread.setName("recvThread " + sock.getRemoteSocketAddress());
 		recvThread.start();
 	}
 
 	// private final LinkedBlockingQueue<DatagramPacket> recvQueue = new
 	// LinkedBlockingQueue<>();
-	private final byte[] recvBuf = new byte[MAX_JUMBO];
+	//private final byte[] recvBuf = new byte[MAX_JUMBO];
 
 	// private final byte[] sendBuf = new byte[2000];
 	// private final ByteBuffer ba = ByteBuffer.allocate(MAX_JUMBO);
@@ -142,25 +220,15 @@ public class Messenger implements Closeable {
 
 	private void recvLoop() throws Exception {
 		for (;;) {
-			DatagramPacket udpReve = new DatagramPacket(recvBuf, recvBuf.length);
-			final int len;
-			final SocketAddress from;
-			synchronized (udpReve) {
-				try {
-					sock.receive(udpReve);
-				} catch (SocketException e) {
-					break;
-				}
-				len = udpReve.getLength();
-				from = udpReve.getSocketAddress();
-				// byte[] copy = new byte[len];
-				// System.arraycopy(recvBuf, 0, copy, 0, len);
-				// udpReve.setData(copy);
-			}
 			// recvQueue.add(udpReve);
-			String msg = new String(recvBuf, 0, len, "UTF-8");
+			final String msg;
 			try {
-				onMessage(msg, from);
+				msg = in.readUTF();
+			} catch (IOException e) {
+				break;
+			}
+			try {
+				onMessage(msg);
 			} catch (Exception e) {
 				LOGGER.log(Level.SEVERE, "", e);
 			}
