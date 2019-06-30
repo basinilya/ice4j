@@ -2,6 +2,8 @@ package org.foo.icetun;
 
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.BindException;
 import java.net.InetAddress;
@@ -15,6 +17,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RunnableFuture;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import org.ice4j.Transport;
@@ -25,23 +28,21 @@ import org.ice4j.ice.IceMediaStream;
 import org.ice4j.ice.IceProcessingState;
 import org.ice4j.ice.harvest.CandidateHarvester;
 import org.ice4j.ice.harvest.StunCandidateHarvester;
+import org.ice4j.pseudotcp.PseudoTcpSocket;
+import org.ice4j.pseudotcp.PseudoTcpSocketFactory;
+import org.ice4j.socket.MultiplexingDatagramSocket;
 
 import test.SdpUtils;
 
 public class Aaa {
 
+	static final BlockingQueue<String> queue = new SynchronousQueue<>();
 	
     public static void main(final String[] args) throws Exception {
-    	/*
-    	FutureTask<String> fut = new FutureTask<String>(new Callable<String>() {
-    		@Override
-    		public String call() throws Exception {
-    			return null;
-    		}
-		});
-    	*/
-    	final BlockingQueue<String> queue = new LinkedBlockingQueue<>();
     	// https://stackoverflow.com/questions/36829060/how-to-receive-public-ip-and-port-using-stun-and-ice4j
+
+    	boolean pseudoServer = false;
+
     	Messenger messenger = new Messenger() {
     		@Override
     		public void onMessage(String msg) {
@@ -54,6 +55,16 @@ public class Aaa {
     	};
     	messenger.start();
     	logger.info("messenger started");
+    	
+    	for (;;) {
+    		pseudoServer = Math.random() > 0.5;
+        	messenger.sendMessage(Boolean.toString(pseudoServer));
+        	String msg = queue.take();
+        	if (Boolean.parseBoolean(msg) == !pseudoServer) {
+        		break;
+        	}
+    	}
+    	logger.log(Level.INFO, "pseudoServer: {0}", pseudoServer);
     	
         final Agent agent = new Agent(); // A simple ICE Agent
         /*** Setup the STUN servers: ***/
@@ -69,9 +80,10 @@ public class Aaa {
 
     	final IceMediaStream stream = agent.createMediaStream("data");
         final int port = 5000; // Choose any port
+        Component comp  = null;
         // agent.createco
         try {
-            agent.createComponent(stream, Transport.UDP, port, port, port + 100);
+            comp = agent.createComponent(stream, Transport.UDP, port, port, port + 100);
             // The three last arguments are: preferredPort, minPort, maxPort
         } catch (final BindException e) {
             // TODO Auto-generated catch block
@@ -115,6 +127,33 @@ public class Aaa {
         // You need to listen for state change so that once connected you can then use the socket.
         agent.startConnectivityEstablishment(); // This will do all the work for you to connect
 
+        String resultName = queue.take();
+        IceProcessingState iceProcessingState = IceProcessingState.valueOf(resultName);
+        
+        if (iceProcessingState == IceProcessingState.TERMINATED) {
+        	MultiplexingDatagramSocket dgramSock = comp.getSocket();
+        	logger.log(Level.INFO, "component socket closed: {0}", dgramSock.isClosed());
+        	if (true) {
+        	PseudoTcpSocket socket = new PseudoTcpSocketFactory().
+                    createSocket(dgramSock);
+            socket.setConversationID(1073741824);
+            socket.setMTU(1500);
+            if (pseudoServer) {
+            	TransportAddress peerAddr = comp.getSelectedPair().getRemoteCandidate().getTransportAddress();
+	            socket.setDebugName("R");
+	        	socket.connect(peerAddr, 15000);
+	        	String msg = "hello";
+	        	new DataOutputStream(socket.getOutputStream()).writeUTF(msg);
+	            socket.getOutputStream().flush();
+            	logger.log(Level.INFO, "sent message: {0}", msg);
+            } else {
+	            socket.setDebugName("L");
+            	socket.accept(15000);
+            	String msg = new DataInputStream(socket.getInputStream()).readUTF();
+            	logger.log(Level.INFO, "received message: {0}", msg);
+            }
+        	}
+        }
         
         Thread.sleep(30000);
         System.exit(0);
@@ -182,14 +221,17 @@ public class Aaa {
              * that Agent instances are to be explicitly prepared for
              * garbage collection.
              */
-            ((Agent) evt.getSource()).free();
+            //((Agent) evt.getSource()).free();
 
             logger.info("Total ICE processing time: "
                 + (System.currentTimeMillis() - startTime));
-            System.exit(0);
+            try {
+				queue.put(((IceProcessingState)iceProcessingState).name());
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
         }
     }
 }
-
 	private static final Logger logger = Logger.getLogger(Aaa.class.getName());
 }

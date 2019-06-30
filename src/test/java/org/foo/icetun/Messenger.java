@@ -198,10 +198,9 @@ public class Messenger implements Closeable {
 				}
 			});
 			nTasks = 1;
-			LOGGER.log(Level.FINE, "done ecs.submit()");
+			//LOGGER.log(Level.FINE, "done ecs.submit()");
 
 			for (InetSocketAddress otherPeer : otherPeers) {
-				LOGGER.log(Level.FINE, "done ecs.submit()");
 				ecs.submit(new Callable<Socket>() {
 					@Override
 					public Socket call() throws Exception {
@@ -210,11 +209,12 @@ public class Messenger implements Closeable {
 						return tmp;
 					}
 				});
+				//LOGGER.log(Level.FINE, "done ecs.submit()");
 				nTasks++;
 			}
 			for (; nTasks > 0;) {
 				try {
-					LOGGER.log(Level.FINE, "calling ecs.take()...");
+					//LOGGER.log(Level.FINE, "calling ecs.take()...");
 					Future<Socket> completedFut = ecs.take();
 					nTasks--;
 					sock = completedFut.get();
@@ -230,7 +230,7 @@ public class Messenger implements Closeable {
 			// futures can be resolved
 			List<Runnable> uncommenced = executor.shutdownNow();
 			nTasks -= uncommenced.size();
-			LOGGER.log(Level.FINE, "uncommenced tasks: {0}", uncommenced.size());
+			//LOGGER.log(Level.FINE, "uncommenced tasks: {0}", uncommenced.size());
 
 			final ExecutorService saveExecutor = executor;
 			executor = Executors.newSingleThreadExecutor();
@@ -242,7 +242,7 @@ public class Messenger implements Closeable {
 					int nTasks = nTasks2;
 					for (; nTasks > 0; nTasks--) {
 						try {
-							LOGGER.log(Level.FINE, "calling ecs.take()...");
+							//LOGGER.log(Level.FINE, "calling ecs.take()...");
 							Socket tmp = ecs2.take().get();
 							LOGGER.log(Level.INFO, "also connected to: {0}", sock.getRemoteSocketAddress());
 							try {
