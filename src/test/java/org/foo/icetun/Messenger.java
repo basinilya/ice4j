@@ -15,6 +15,7 @@ import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorCompletionService;
@@ -32,14 +33,14 @@ public class Messenger implements Closeable {
 	}
 
 	private static final int PORT = 6270;
-	//private static final int MAX_JUMBO = 10000;
+	// private static final int MAX_JUMBO = 10000;
 
 	private static final InetSocketAddress[] PEERS = { //
 			mkPeer("192.168.21.116", PORT), //
 			mkPeer("192.168.148.87", PORT), //
 			mkPeer("192.168.21.116", PORT + 1), //
 			mkPeer("192.168.148.87", PORT + 1) //
-			};
+	};
 
 	private static InetSocketAddress mkPeer(String hostname, int port) {
 		return hostname == null ? new InetSocketAddress(port) : InetSocketAddress.createUnresolved(hostname, port);
@@ -77,11 +78,13 @@ public class Messenger implements Closeable {
 				Thread.currentThread().interrupt();
 			}
 		}
-		executorService.shutdown();
-		try {
-			executorService.awaitTermination(10, TimeUnit.SECONDS);
-		} catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
+		if (executor != null) {
+			executor.shutdown();
+			try {
+				executor.awaitTermination(10, TimeUnit.SECONDS);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
 		}
 	}
 
@@ -115,9 +118,9 @@ public class Messenger implements Closeable {
 	private DataOutputStream out;
 
 	private DataInput in;
-	
+
 	private static final String HANDSHAKE = "hi\n";
-	
+
 	private void handshake(Socket tmp) throws IOException {
 		boolean ok = false;
 		try {
@@ -140,11 +143,9 @@ public class Messenger implements Closeable {
 		}
 	}
 
-	private final ExecutorService executorService = Executors.newCachedThreadPool();
+	private ExecutorService executor;
 
 	private void start0() throws Exception {
-
-		ExecutorCompletionService<Socket> ecs = new ExecutorCompletionService<>(executorService);
 
 		for (InetSocketAddress unresolved : PEERS) {
 			final InetSocketAddress resolved;
@@ -154,7 +155,7 @@ public class Messenger implements Closeable {
 						? new InetSocketAddress(InetAddress.getByName(unresolved.getHostName()), unresolved.getPort())
 						: unresolved;
 			} catch (UnknownHostException e) {
-				LOGGER.log(Level.FINE, "{0}", (Object)e);
+				LOGGER.log(Level.FINE, "{0}", (Object) e);
 				continue;
 			}
 			if (ss == null) {
@@ -179,55 +180,70 @@ public class Messenger implements Closeable {
 		}
 		LOGGER.log(Level.INFO, "other peers: {0}", otherPeers);
 
-		final ServerSocket saveSs = ss;
-		ecs.submit(new Callable<Socket>() {
-			@Override
-			public Socket call() throws Exception {
-				for (;;) {
-					Socket tmp = saveSs.accept();
-					handshake(tmp);
-					return tmp;
-				}
-			}
-		});
-		LOGGER.log(Level.FINE, "done ecs.submit()");
-		int nTasks = 1;
-		
-		for (InetSocketAddress otherPeer : otherPeers) {
-			LOGGER.log(Level.FINE, "done ecs.submit()");
+		int nTasks = 0;
+		ExecutorCompletionService<Socket> ecs = null;
+		executor = Executors.newCachedThreadPool();
+		try {
+			ecs = new ExecutorCompletionService<>(executor);
+
+			final ServerSocket saveSs = ss;
 			ecs.submit(new Callable<Socket>() {
 				@Override
 				public Socket call() throws Exception {
-					Socket tmp = new Socket(otherPeer.getAddress(), otherPeer.getPort());
-					handshake(tmp);
-					return tmp;
+					for (;;) {
+						Socket tmp = saveSs.accept();
+						handshake(tmp);
+						return tmp;
+					}
 				}
 			});
-			nTasks++;
-		}
-		for(;nTasks > 0;) {
-			try {
-				LOGGER.log(Level.FINE, "calling ecs.take()...");
-				Future<Socket> completedFut = ecs.take();
-				nTasks--;
-				sock = completedFut.get();
-				LOGGER.log(Level.INFO, "connected to: {0}", sock.getRemoteSocketAddress());
-				break;
-			} catch (ExecutionException e) {
-				Throwable cause = e.getCause();
-				LOGGER.log(Level.INFO, "connect failed: {0}", (Object)cause);
+			nTasks = 1;
+			LOGGER.log(Level.FINE, "done ecs.submit()");
+
+			for (InetSocketAddress otherPeer : otherPeers) {
+				LOGGER.log(Level.FINE, "done ecs.submit()");
+				ecs.submit(new Callable<Socket>() {
+					@Override
+					public Socket call() throws Exception {
+						Socket tmp = new Socket(otherPeer.getAddress(), otherPeer.getPort());
+						handshake(tmp);
+						return tmp;
+					}
+				});
+				nTasks++;
 			}
-		}
-		if (nTasks > 0) {
+			for (; nTasks > 0;) {
+				try {
+					LOGGER.log(Level.FINE, "calling ecs.take()...");
+					Future<Socket> completedFut = ecs.take();
+					nTasks--;
+					sock = completedFut.get();
+					LOGGER.log(Level.INFO, "connected to: {0}", sock.getRemoteSocketAddress());
+					break;
+				} catch (ExecutionException e) {
+					Throwable cause = e.getCause();
+					LOGGER.log(Level.INFO, "connect failed: {0}", (Object) cause);
+				}
+			}
+		} finally {
+			// this does not call Future.cancel(), i.e. already commenced
+			// futures can be resolved
+			List<Runnable> uncommenced = executor.shutdownNow();
+			nTasks -= uncommenced.size();
+			LOGGER.log(Level.FINE, "uncommenced tasks: {0}", uncommenced.size());
+
+			final ExecutorService saveExecutor = executor;
+			executor = Executors.newSingleThreadExecutor();
 			final int nTasks2 = nTasks;
-			executorService.submit(new Callable<Void>() {
+			final ExecutorCompletionService<Socket> ecs2 = ecs;
+			executor.submit(new Callable<Void>() {
 				@Override
 				public Void call() throws Exception {
 					int nTasks = nTasks2;
-					for(;nTasks > 0; nTasks--) {
+					for (; nTasks > 0; nTasks--) {
 						try {
 							LOGGER.log(Level.FINE, "calling ecs.take()...");
-							Socket tmp = ecs.take().get();
+							Socket tmp = ecs2.take().get();
 							LOGGER.log(Level.INFO, "also connected to: {0}", sock.getRemoteSocketAddress());
 							try {
 								tmp.close();
@@ -236,9 +252,10 @@ public class Messenger implements Closeable {
 							}
 						} catch (ExecutionException e) {
 							Throwable cause = e.getCause();
-							LOGGER.log(Level.INFO, "connect failed: {0}", (Object)cause);
+							LOGGER.log(Level.INFO, "connect failed: {0}", (Object) cause);
 						}
 					}
+					saveExecutor.awaitTermination(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
 					return null;
 				}
 			});
@@ -256,7 +273,7 @@ public class Messenger implements Closeable {
 
 	// private final LinkedBlockingQueue<DatagramPacket> recvQueue = new
 	// LinkedBlockingQueue<>();
-	//private final byte[] recvBuf = new byte[MAX_JUMBO];
+	// private final byte[] recvBuf = new byte[MAX_JUMBO];
 
 	// private final byte[] sendBuf = new byte[2000];
 	// private final ByteBuffer ba = ByteBuffer.allocate(MAX_JUMBO);
