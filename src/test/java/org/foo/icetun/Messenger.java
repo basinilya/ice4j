@@ -39,7 +39,10 @@ public class Messenger implements Closeable {
 			mkPeer("192.168.21.116", PORT), //
 			mkPeer("192.168.148.87", PORT), //
 			mkPeer("192.168.21.116", PORT + 1), //
-			mkPeer("192.168.148.87", PORT + 1) //
+			mkPeer("192.168.148.87", PORT + 1),
+			mkPeer(null, PORT), //
+			mkPeer(null, PORT + 1) //
+			//
 	};
 
 	private static InetSocketAddress mkPeer(String hostname, int port) {
