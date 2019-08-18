@@ -225,15 +225,20 @@ public class PortForwardManager
             {
                 controlSocket = createPseudoTcpSocket(datagramSocket);
                 controlSocket.setConversationID(0L);
-                controlSocket.setDebugName("control");
+                String debugName = "control";
+                controlSocket.setDebugName(debugName);
                 if (accept)
                 {
+                	LOGGER.log(Level.FINE, "Accepting {0} ...", debugName);
                     controlSocket.accept(CONNECT_TIMEOUT);
+                	LOGGER.log(Level.FINE, "Accepted {0}", debugName);
                 }
                 else
                 {
                     listenCounter = HALF;
+                	LOGGER.log(Level.FINE, "Connecting {0} ...", debugName);
                     controlSocket.connect(remoteAddress, CONNECT_TIMEOUT);
+                	LOGGER.log(Level.FINE, "Connected {0}", debugName);
                 }
                 controlOut =
                     new BufferedOutputStream(controlSocket.getOutputStream());
@@ -293,6 +298,7 @@ public class PortForwardManager
                 for (;;)
                 {
                     int payloadLength = controlIn.readShort();
+                    LOGGER.log(Level.FINER, "reading message: {0} bytes...", + payloadLength);
                     if (payloadLength < 1 || payloadLength > MAX_COMMAND)
                     {
                         throw new Exception(
@@ -301,6 +307,7 @@ public class PortForwardManager
                     }
                     final byte[] payload = new byte[payloadLength];
                     controlIn.readFully(payload);
+                    LOGGER.log(Level.FINER, "got message: {0} bytes", + payloadLength);
                     Thread serveThread = new Thread(new Runnable()
                     {
                         @Override
