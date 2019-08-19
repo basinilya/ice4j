@@ -60,29 +60,31 @@ public class PseudoTest {
 		dsock1.connect(addr2);
 		dsock2.connect(addr1);
 
-		long convId = 0;
-		aaa(convId);
+		aaa(0);
+		aaa(1);
 
 	}
 
-	private void aaa(long convId) throws IOException, InterruptedException, ExecutionException {
+	private int nTransmissions;
+
+	private void aaa(long convId) throws Exception {
 		PseudoTcpSocket sock1 = createPseudoTcpSocket(dsock1, convId);
 		final PseudoTcpSocket sock2 = createPseudoTcpSocket(dsock2, convId);
 		Future<Void> fut = submitConnect(sock2, addr1);
-		log("accepting " + sock1.getConversationID() + " ...");
+		log("accepting dsock1:" + sock1.getConversationID() + " from dsock2 ...");
 		sock1.accept(addr2, TIMEOUT);
-		log("accepted " + sock1.getConversationID() + "");
+		log("accepted dsock1:" + sock1.getConversationID() + " from dsock2");
 		fut.get();
 
-		log("#transmissions: 1");
+		log("#transmissions: " + (++nTransmissions));
 		startPump(new DevZeroInputStream(), sock1.getOutputStream(), "zero ==> dsock1:" + convId);
 		startPump(sock2.getInputStream(), new DevNullOutputStream(), "dsock2:" + convId + " ==> null");
 		Thread.sleep(2000);
 
-		log("#transmissions: 2");
+		log("#transmissions: " + (++nTransmissions));
 		startPump(new DevZeroInputStream(), sock2.getOutputStream(), "zero ==> dsock2:" + convId);
 		startPump(sock1.getInputStream(), new DevNullOutputStream(), "dsock1:" + convId + " ==> null");
-		Thread.sleep(5000);
+		Thread.sleep(2000);
 	}
 
 	private Future<Void> submitConnect(final PseudoTcpSocket sock, final SocketAddress addr) {
@@ -90,9 +92,18 @@ public class PseudoTest {
 
 			@Override
 			public Void call() throws Exception {
-				log("connecting " + sock.getConversationID() + " to " + addr + " ...");
+				String otherDsock;
+				String thisDsock;
+				if (addr.equals(addr1)) {
+					otherDsock = "dsock1";
+					thisDsock = "dsock2";
+				} else {
+					otherDsock = "dsock2";
+					thisDsock = "dsock1";
+				}
+				log("connecting " + thisDsock + ":" + sock.getConversationID() + " to " + otherDsock + " ...");
 				sock.connect(addr, TIMEOUT);
-				log("connected " + sock.getConversationID() + " to " + addr);
+				log("connected " + thisDsock + ":" + sock.getConversationID() + " to " + otherDsock);
 				return null;
 			}
 		});
