@@ -40,11 +40,13 @@ public class PseudoTest {
 	private SocketAddress addr2;
 
 	public static void main(String[] args) throws Exception {
+		if (false) {
 		YesInputStream in = new YesInputStream("tst:");
 		DevNullOutputStream out = new DevNullOutputStream();
 		startPump(in, out, "xxx", new YesInputStream("tst:"));
 		Thread.sleep(2000);
 		System.exit(0);
+		}
 		try {
 			PseudoTest inst = new PseudoTest();
 			inst.call();
@@ -82,14 +84,18 @@ public class PseudoTest {
 		log("accepted dsock1:" + sock1.getConversationID() + " from dsock2");
 		fut.get();
 
+		String tag;
+
 		log("#transmissions: " + (++nTransmissions));
-		startPump(new DevZeroInputStream(), sock1.getOutputStream(), "zero ==> dsock1:" + convId, null);
-		startPump(sock2.getInputStream(), new DevNullOutputStream(), "dsock2:" + convId + " ==> null", null);
+		tag = "dsock1==>dsock2:" + convId;
+		startPump(new YesInputStream(tag), sock1.getOutputStream(), "yes ==> dsock1:" + convId, null);
+		startPump(sock2.getInputStream(), new DevNullOutputStream(), "dsock2:" + convId + " ==> null", new YesInputStream(tag));
 		Thread.sleep(2000);
 
 		log("#transmissions: " + (++nTransmissions));
-		startPump(new DevZeroInputStream(), sock2.getOutputStream(), "zero ==> dsock2:" + convId, null);
-		startPump(sock1.getInputStream(), new DevNullOutputStream(), "dsock1:" + convId + " ==> null", null);
+		tag = "dsock2==>dsock1:" + convId;
+		startPump(new YesInputStream(tag), sock2.getOutputStream(), "yes ==> dsock2:" + convId, null);
+		startPump(sock1.getInputStream(), new DevNullOutputStream(), "dsock1:" + convId + " ==> null", new YesInputStream(tag));
 		Thread.sleep(2000);
 	}
 
