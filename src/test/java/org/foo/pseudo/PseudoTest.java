@@ -1,5 +1,7 @@
 package org.foo.pseudo;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.Closeable;
 import java.io.DataInputStream;
 import java.io.IOException;
@@ -8,6 +10,7 @@ import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.Thread.UncaughtExceptionHandler;
+import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.SocketAddress;
@@ -41,11 +44,11 @@ public class PseudoTest {
 
 	public static void main(String[] args) throws Exception {
 		if (false) {
-		YesInputStream in = new YesInputStream("tst:");
-		DevNullOutputStream out = new DevNullOutputStream();
-		startPump(in, out, "xxx", new YesInputStream("tst:"));
-		Thread.sleep(2000);
-		System.exit(0);
+			YesInputStream in = new YesInputStream("tst:");
+			DevNullOutputStream out = new DevNullOutputStream();
+			startPump(in, out, "xxx", new YesInputStream("tst:"));
+			Thread.sleep(2000);
+			System.exit(0);
 		}
 		try {
 			PseudoTest inst = new PseudoTest();
@@ -58,6 +61,7 @@ public class PseudoTest {
 	}
 
 	private void call() throws Exception {
+
 		dsock1 = new DatagramSocket(0, InetAddress.getLoopbackAddress());
 		dsock2 = new DatagramSocket(0, InetAddress.getLoopbackAddress());
 
@@ -68,6 +72,26 @@ public class PseudoTest {
 		dsock1.connect(addr2);
 		dsock2.connect(addr1);
 
+		OutputStream zeroToDsock1 = new BufferedOutputStream(new OutputStream() {
+
+			@Override
+			public void write(int b) throws IOException {
+				write(new byte[] { (byte) b }, 0, 1);
+			}
+
+			@Override
+			public void write(byte[] buf, int off, int len) throws IOException {
+				DatagramPacket pkt = new DatagramPacket(buf, 0, len);
+				dsock1.send(pkt);
+			}
+		}, MTU);
+
+		InputStream dsock2ToNull = new UdpInputStream(dsock2);
+
+		startPump(dsock2ToNull, new DevNullOutputStream(), "dummy2", null);
+		startPump(new DevZeroInputStream(), zeroToDsock1, "dummy1", null);
+		Thread.sleep(10000);
+		System.exit(0);
 		aaa(0);
 		aaa(1);
 
@@ -89,13 +113,15 @@ public class PseudoTest {
 		log("#transmissions: " + (++nTransmissions));
 		tag = "dsock1==>dsock2:" + convId;
 		startPump(new YesInputStream(tag), sock1.getOutputStream(), "yes ==> dsock1:" + convId, null);
-		startPump(sock2.getInputStream(), new DevNullOutputStream(), "dsock2:" + convId + " ==> null", new YesInputStream(tag));
+		startPump(sock2.getInputStream(), new DevNullOutputStream(), "dsock2:" + convId + " ==> null",
+				new YesInputStream(tag));
 		Thread.sleep(2000);
 
 		log("#transmissions: " + (++nTransmissions));
 		tag = "dsock2==>dsock1:" + convId;
 		startPump(new YesInputStream(tag), sock2.getOutputStream(), "yes ==> dsock2:" + convId, null);
-		startPump(sock1.getInputStream(), new DevNullOutputStream(), "dsock1:" + convId + " ==> null", new YesInputStream(tag));
+		startPump(sock1.getInputStream(), new DevNullOutputStream(), "dsock1:" + convId + " ==> null",
+				new YesInputStream(tag));
 		Thread.sleep(2000);
 	}
 
@@ -122,7 +148,8 @@ public class PseudoTest {
 		return fut;
 	}
 
-	public static void startPump(final InputStream in, final OutputStream out, final String name, final InputStream verifyInArg) {
+	public static void startPump(final InputStream in, final OutputStream out, final String name,
+			final InputStream verifyInArg) {
 		Thread t = new Thread(new Runnable() {
 
 			@Override
@@ -145,7 +172,8 @@ public class PseudoTest {
 						total += nb;
 						long now = System.currentTimeMillis();
 						if (now - backThen > meterPeriod) {
-							log(String.format( "%.2fkb/s; total: %d", (double)(total - prevTotal) / (now - backThen), total));
+							log(String.format("%.2fkb/s; total: %d", (double) (total - prevTotal) / (now - backThen),
+									total));
 							backThen = now;
 							prevTotal = total;
 						}
@@ -183,8 +211,8 @@ public class PseudoTest {
 		socket.setMTU(MTU);
 		socket.setConversationID(convId);
 		if (false) {
-		socket.setOption(Option.OPT_SNDBUF, 300000);
-		socket.setOption(Option.OPT_RCVBUF, 300000);
+			socket.setOption(Option.OPT_SNDBUF, 300000);
+			socket.setOption(Option.OPT_RCVBUF, 300000);
 		}
 		return socket;
 	}
@@ -222,11 +250,11 @@ public class PseudoTest {
 		YesInputStream(String constantPart) {
 			this.constantPart = constantPart.getBytes(Charset.forName("UTF-8"));
 		}
-		
+
 		@Override
 		public int read() throws IOException {
 			byte[] buf = new byte[1];
-			
+
 			int nb = read(buf, 0, 1);
 			return nb == -1 ? -1 : buf[0];
 		}
@@ -269,13 +297,44 @@ public class PseudoTest {
 				}
 			}
 		}
-		
+
 		@Override
 		public void close() throws IOException {
 			closed = true;
 		}
 
 		private volatile boolean closed;
+	}
+
+	private static class UdpInputStream extends BufferedInputStream {
+		static final int HUGEUDP = 8000;
+
+		UdpInputStream(DatagramSocket dsock) {
+			super(new InputStream() {
+				@Override
+				public int read() throws IOException {
+					byte[] buf = new byte[1];
+
+					int nb = read(buf, 0, 1);
+					return nb == -1 ? -1 : buf[0];
+				}
+
+				@Override
+				public int read(byte[] buf, int off, int len) throws IOException {
+					if (len - off != HUGEUDP) {
+						throw new RuntimeException("internal error");
+					}
+					DatagramPacket pkt = new DatagramPacket(buf, off, len);
+					dsock.receive(pkt);
+					return pkt.getLength() - pkt.getOffset();
+				}
+			}, HUGEUDP);
+		}
+
+		@Override
+		public int read(byte[] b, int off, int len) throws IOException {
+			return super.read(b, off, len > HUGEUDP ? HUGEUDP : len);
+		}
 	}
 
 	private static class DevZeroInputStream extends InputStream {
@@ -313,15 +372,15 @@ public class PseudoTest {
 
 		@Override
 		public void uncaughtException(Thread t, Throwable e) {
-            StringWriter sw = new StringWriter();
-            PrintWriter pw = new PrintWriter(sw);
-            pw.println();
-            e.printStackTrace(pw);
-            pw.close();
-            String throwable = sw.toString();
+			StringWriter sw = new StringWriter();
+			PrintWriter pw = new PrintWriter(sw);
+			pw.println();
+			e.printStackTrace(pw);
+			pw.close();
+			String throwable = sw.toString();
 			log("Uncaught Exception:" + throwable);
 		}
-		
+
 	};
 
 }
