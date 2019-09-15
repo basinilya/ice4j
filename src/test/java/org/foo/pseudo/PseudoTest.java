@@ -318,6 +318,17 @@ public class PseudoTest {
 				}
 			}, MTU);
 		}
+
+		@Override
+		public synchronized void write(byte[] b, int off, int len) throws IOException {
+			while (len > 0) {
+				int avail = this.buf.length - this.count;
+				int towrite = Math.min(len, avail == 0 ? this.buf.length : avail);
+				super.write(b, off, towrite);
+				off += towrite;
+				len -= towrite;
+			}
+		}
 	}
 
 	private static class UdpInputStream extends BufferedInputStream {
