@@ -72,19 +72,7 @@ public class PseudoTest {
 		dsock1.connect(addr2);
 		dsock2.connect(addr1);
 
-		OutputStream zeroToDsock1 = new BufferedOutputStream(new OutputStream() {
-
-			@Override
-			public void write(int b) throws IOException {
-				write(new byte[] { (byte) b }, 0, 1);
-			}
-
-			@Override
-			public void write(byte[] buf, int off, int len) throws IOException {
-				DatagramPacket pkt = new DatagramPacket(buf, 0, len);
-				dsock1.send(pkt);
-			}
-		}, MTU);
+		OutputStream zeroToDsock1 = new UdpOutputStream(dsock1);
 
 		InputStream dsock2ToNull = new UdpInputStream(dsock2);
 
@@ -304,6 +292,32 @@ public class PseudoTest {
 		}
 
 		private volatile boolean closed;
+	}
+
+	private static class UdpOutputStream extends BufferedOutputStream {
+		public UdpOutputStream(DatagramSocket dsock1) {
+			super(new OutputStream() {
+
+				@Override
+				public void write(int b) throws IOException {
+					write(new byte[] { (byte) b }, 0, 1);
+				}
+
+				@Override
+				public void write(byte[] buf, int off, int len) throws IOException {
+					while(len > 0) {
+						int nb = len;
+						if (len > MTU) {
+							nb = MTU;
+						}
+						DatagramPacket pkt = new DatagramPacket(buf, off, nb);
+						dsock1.send(pkt);
+						len -= nb;
+						off += nb;
+					}
+				}
+			}, MTU);
+		}
 	}
 
 	private static class UdpInputStream extends BufferedInputStream {
